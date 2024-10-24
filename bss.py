@@ -26,7 +26,7 @@ def nndsvd(M, k, mode="nndsvd"):
         The input data matrix to decompose
     k: int
         The number of bases for the decomposition.
-    variant: str
+    mode: str
         The NNDSVD variant: "nndsvd" for the basic algorithm, "nndsvda" for
         NNDSVD with zeros filled with the average value, "nndsvdar" for
         NNDSVD with zeros filled with small random values.
@@ -39,13 +39,13 @@ def nndsvd(M, k, mode="nndsvd"):
     """
     D, N = M.shape
     
-    # Compute the SVD of X
+    # Compute the SVD of M
     U, S, Vt = np.linalg.svd(M, full_matrices=False)
     
-    # Initialize W and H
+    # Initialize B and W
     if mode == "nndsvdar":
-        B = np.random.random((D, k)) + 1e-8
-        W = np.random.random((k, N)) + 1e-8
+        B = np.random.random((D, k)) + 1e-7 # For matrix stability
+        W = np.random.random((k, N)) + 1e-7
     else:
         B = np.zeros((D, k))
         W = np.zeros((k, N))
@@ -87,7 +87,8 @@ def nndsvd(M, k, mode="nndsvd"):
 
     return B, W
 
-def nmf(M, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=5e-2, verbose=True):
+def nmf(M, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=1e-2, 
+        lambda_temporal=1e-1, verbose=True):
     '''
     Non Negative Matrix Factorization using KL-Divergence
 
@@ -105,6 +106,9 @@ def nmf(M, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=5e-2, verbos
     verbose: bool
         Boolean determining whether to print iteration data
     
+        
+
+
     Returns:
     B: 2D np.ndarray
         Matrix containing bases from decomposition (DxK)
@@ -113,15 +117,25 @@ def nmf(M, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=5e-2, verbos
     '''
     D, N = M.shape
     K = n_bases
+    epsilon = 1e-10 # For numerical stability
     B, W = nndsvd(M, n_bases, mode='nndsvdar') # Use random mode for zero values
+    B = np.clip(B, epsilon, None)
+    W = np.clip(W, epsilon, None)
     ones = np.ones(M.shape)
     i = 0
     div = np.inf  
     prev = 0
-    epsilon = 1e-10 # For numerical stability
     while i < n_iterations and div > thresh:
         B = B * (((M / (B @ W)) @ W.T) / (ones @ W.T + epsilon))
-        W = W * ((B.T @ (M / (B @ W))) / (B.T @ ones + lambda_sparse + epsilon))
+        W_update = (B.T @ (M / (B @ W))) / (B.T @ ones + lambda_sparse + epsilon)
+        
+        # Temporal continuity regularization on W
+        for t in range(1, N):
+            W_update[:, t] += lambda_temporal * (W[:, t-1] - W[:, t])
+        W = W * W_update
+
+        B = np.clip(B, epsilon, None)
+        W = np.clip(W, epsilon, None)
         kl = kl_divergence(M, B, W)
         div = np.abs(kl - prev)
         if verbose:
@@ -130,10 +144,10 @@ def nmf(M, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=5e-2, verbos
         prev = kl
     return B, W
 
-def remove_inactive_bases(B, W, threshold=500):
+def remove_inactive_bases(B, W, threshold=100):
     weights = np.sum(W, axis=1)
     print(weights)
-    return B[:, weights > threshold], W[weights > threshold]
+    return B[:, weights > threshold] + 1e-8, W[weights > threshold] + 1e-8
 
 
 def kmpp_init(X, K):
@@ -200,6 +214,20 @@ def kmeans(X, K, algo=0):
     return C, z
 
 def calculate_hnr(signal, sr, fmin=50.0, fmax=500.0):
+    '''
+    Calculate Harmonic-to-noise ratio
+
+    Parameters:
+    signal: np.ndarray
+        Time-domain signal to calculate hnr from
+    sr: int
+        Sample Rate
+    fmin: float
+        Minimum frequency to search
+    fmax: float
+        Maximum frequency to search
+
+    '''
     f0, _, _ = librosa.pyin(signal, fmin=fmin, fmax=fmax, sr=sr)
     harmonic_part = librosa.effects.harmonic(signal)
     noise_part = signal - harmonic_part
@@ -220,21 +248,23 @@ if __name__ == "__main__":
     phase = np.angle(spect)
     
     # Perform NMF
-    n_bases = 1600
-    n_iterations = 200
-    lambda_sparse = 3e-1
+    n_bases = 40
+    n_iterations = 500
+    lambda_sparse = 0.1
+    lambda_temporal = 0.1
     bases_unfiltered, weights_unfiltered = nmf(mag, n_bases=n_bases, n_iterations=n_iterations, 
-                         lambda_sparse=lambda_sparse, verbose=True)
+                         lambda_sparse=lambda_sparse, lambda_temporal=lambda_temporal, verbose=True)
 
-
-    bases, weights = remove_inactive_bases(bases_unfiltered, weights_unfiltered)
+    bases_threshold = np.maximum(weights_unfiltered) * 0.01 
+    bases, weights = remove_inactive_bases(bases_unfiltered, weights_unfiltered, bases_threshold)
 
     # Perform Kmeans Clustering (with Kmeans++ initialization)
-    n_clusters = 8
+    n_clusters = 3
     if verbose:
-        print("Clustering Weights")
-    C, z = kmeans(weights, n_clusters, algo=1)
+        print("Clustering Bases")
+    C, z = kmeans(bases.T, n_clusters, algo=1)
 
+    C = C.T
 
     # Calculate Harmonic-to-noise ratio
     hnr_values = []
