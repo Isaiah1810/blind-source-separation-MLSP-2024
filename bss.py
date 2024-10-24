@@ -13,45 +13,49 @@ def kl_divergence(M, B, W):
     M_hat = np.maximum(M_hat, 1e-10)  # Add small constant to avoid log(0)
     
     # Calculate KL Divergence
-    kl_div = np.sum(M * np.log(M / M_hat + 1e10)) # For numerical stability
+    kl_div = np.sum(M * np.log(M / M_hat + 1e-10)) # For numerical stability
     
     return kl_div
 
-def nndsvd(M, k, variant="nndsvd"):
+def nndsvd(M, k, mode="nndsvd"):
     """
     NNDSVD algorithm to initialize NMF matrices B and W.
     
     Parameters:
-    X: 2D np.array
-        The input data matrix to decompose (usually a non-negative matrix).
+    M: 2D np.array
+        The input data matrix to decompose
     k: int
-        The number of components (bases) for the decomposition.
-    variant: str, optional
+        The number of bases for the decomposition.
+    variant: str
         The NNDSVD variant: "nndsvd" for the basic algorithm, "nndsvda" for
         NNDSVD with zeros filled with the average value, "nndsvdar" for
         NNDSVD with zeros filled with small random values.
         
     Returns:
-    W: 2D np.array
+    B: 2D np.array
         The initialized basis matrix (D x K).
-    H: 2D np.array
+    W: 2D np.array
         The initialized weight matrix (K x N).
     """
     D, N = M.shape
     
-    # Step 1: Compute the SVD of X
+    # Compute the SVD of X
     U, S, Vt = np.linalg.svd(M, full_matrices=False)
     
-    # Step 2: Initialize W and H
-    W = np.zeros((D, k))
-    H = np.zeros((k, N))
+    # Initialize W and H
+    if mode == "nndsvdar":
+        B = np.random.random((D, k)) + 1e-8
+        W = np.random.random((k, N)) + 1e-8
+    else:
+        B = np.zeros((D, k))
+        W = np.zeros((k, N))
+        
+    # Initialize the first component
+    B[:, 0] = np.sqrt(S[0]) * np.abs(U[:, 0])
+    W[0, :] = np.sqrt(S[0]) * np.abs(Vt[0, :])
     
-    # Step 3: Initialize the first component
-    W[:, 0] = np.sqrt(S[0]) * np.abs(U[:, 0])
-    H[0, :] = np.sqrt(S[0]) * np.abs(Vt[0, :])
-    
-    # Step 4: Initialize the remaining components
-    for i in range(1, k):
+    # Initialize the remaining components
+    for i in range(1, min(k, D)):
         u = U[:, i]
         v = Vt[i, :]
         u_pos = np.maximum(u, 0)
@@ -68,28 +72,48 @@ def nndsvd(M, k, variant="nndsvd"):
         neg_term = norm_u_neg * norm_v_neg
         
         if pos_term >= neg_term:
-            W[:, i] = np.sqrt(S[i] * pos_term) * u_pos / norm_u_pos
-            H[i, :] = np.sqrt(S[i] * pos_term) * v_pos / norm_v_pos
+            B[:, i] = np.sqrt(S[i] * pos_term) * u_pos / norm_u_pos
+            W[i, :] = np.sqrt(S[i] * pos_term) * v_pos / norm_v_pos
         else:
-            W[:, i] = np.sqrt(S[i] * neg_term) * u_neg / norm_u_neg
-            H[i, :] = np.sqrt(S[i] * neg_term) * v_neg / norm_v_neg
+            B[:, i] = np.sqrt(S[i] * neg_term) * u_neg / norm_u_neg
+            W[i, :] = np.sqrt(S[i] * neg_term) * v_neg / norm_v_neg
     
-    # Step 5: Handle zero elements based on the variant
-    if variant == "nndsvda":
+
+    # Handle zero elements based on the mode
+    if mode == "nndsvda":
         avg = np.mean(M)
+        B[B == 0] = avg
         W[W == 0] = avg
-        H[H == 0] = avg
-    elif variant == "nndsvdar":
-        np.random.seed(0)
-        W[W == 0] = np.random.random(W[W == 0].shape) * 1e-4
-        H[H == 0] = np.random.random(H[H == 0].shape) * 1e-4
-    
-    return W, H
+
+    return B, W
 
 def nmf(M, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=5e-2, verbose=True):
+    '''
+    Non Negative Matrix Factorization using KL-Divergence
+
+    Parameters:
+    M: 2D np.ndarray 
+        Data Matrix (spectrogram) to be decomposed
+    n_bases: int 
+        Number of bases for decomposition
+    thresh: float
+        Threshold for change in divergence when checking for convergece 
+    n_iterations: int
+        Max number of iterations for nmf to run
+    lambda_sparse: float
+        Regularization parameter for encouraging sparsity
+    verbose: bool
+        Boolean determining whether to print iteration data
+    
+    Returns:
+    B: 2D np.ndarray
+        Matrix containing bases from decomposition (DxK)
+    W: 2D np.ndarray
+    
+    '''
     D, N = M.shape
     K = n_bases
-    B, W = nndsvd(M, n_bases)
+    B, W = nndsvd(M, n_bases, mode='nndsvdar') # Use random mode for zero values
     ones = np.ones(M.shape)
     i = 0
     div = np.inf  
@@ -106,13 +130,10 @@ def nmf(M, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=5e-2, verbos
         prev = kl
     return B, W
 
-
-def calculate_hnr(signal, sr, fmin=50.0, fmax=500.0):
-    f0, _, _ = librosa.pyin(signal, fmin=fmin, fmax=fmax, sr=sr)
-    harmonic_part = librosa.effects.harmonic(signal)
-    noise_part = signal - harmonic_part
-    hnr = 10 * np.log10(np.sum(harmonic_part ** 2) / np.sum(noise_part ** 2) + 1e-10)
-    return hnr
+def remove_inactive_bases(B, W, threshold=500):
+    weights = np.sum(W, axis=1)
+    print(weights)
+    return B[:, weights > threshold], W[weights > threshold]
 
 
 def kmpp_init(X, K):
@@ -178,12 +199,20 @@ def kmeans(X, K, algo=0):
     
     return C, z
 
+def calculate_hnr(signal, sr, fmin=50.0, fmax=500.0):
+    f0, _, _ = librosa.pyin(signal, fmin=fmin, fmax=fmax, sr=sr)
+    harmonic_part = librosa.effects.harmonic(signal)
+    noise_part = signal - harmonic_part
+    hnr = 10 * np.log10(np.sum(harmonic_part ** 2) / np.sum(noise_part ** 2) + 1e-10)
+    return hnr
+
+
 if __name__ == "__main__":
 
     verbose = True
 
     # Load audio file
-    wave, sr = librosa.load("data/train/A Classic Education - NightOwl/mixture.wav")
+    wave, sr = librosa.load("data/train/Actions - One Minute Smile/linear_mixture.wav")
     
     # Compute the magnitude spectrogram
     spect = librosa.stft(wave, n_fft=2048, win_length=1024, hop_length=256)
@@ -191,12 +220,17 @@ if __name__ == "__main__":
     phase = np.angle(spect)
     
     # Perform NMF
-    n_bases = 20  
+    n_bases = 1600
     n_iterations = 200
-    bases, weights = nmf(mag, n_bases=n_bases, n_iterations=n_iterations, verbose=True)
+    lambda_sparse = 3e-1
+    bases_unfiltered, weights_unfiltered = nmf(mag, n_bases=n_bases, n_iterations=n_iterations, 
+                         lambda_sparse=lambda_sparse, verbose=True)
+
+
+    bases, weights = remove_inactive_bases(bases_unfiltered, weights_unfiltered)
 
     # Perform Kmeans Clustering (with Kmeans++ initialization)
-    n_clusters = 5
+    n_clusters = 8
     if verbose:
         print("Clustering Weights")
     C, z = kmeans(weights, n_clusters, algo=1)
@@ -209,6 +243,8 @@ if __name__ == "__main__":
         if verbose:
             print(f"Calculating HNR for cluster {cluster_idx}")
         # Get all data points assigned to this cluster
+
+        cluster_indices = np.where(z == cluster_idx)[0]
 
         cluster_weights = weights[z == cluster_idx]
         cluster_bases = bases[:, z == cluster_idx]
