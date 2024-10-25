@@ -227,6 +227,10 @@ def calculate_hnr(signal, sr, fmin=50.0, fmax=500.0):
     fmax: float
         Maximum frequency to search
 
+    Returns:
+    hnr: float
+        Harmonic-to-noise ratio
+
     '''
     f0, _, _ = librosa.pyin(signal, fmin=fmin, fmax=fmax, sr=sr)
     harmonic_part = librosa.effects.harmonic(signal)
@@ -249,13 +253,14 @@ if __name__ == "__main__":
     
     # Perform NMF
     n_bases = 40
-    n_iterations = 500
+    n_iterations = 100
     lambda_sparse = 0.1
     lambda_temporal = 0.1
     bases_unfiltered, weights_unfiltered = nmf(mag, n_bases=n_bases, n_iterations=n_iterations, 
                          lambda_sparse=lambda_sparse, lambda_temporal=lambda_temporal, verbose=True)
 
-    bases_threshold = np.maximum(weights_unfiltered) * 0.01 
+    # Remove any inactive bases
+    bases_threshold = np.max(weights_unfiltered) * 0.01 
     bases, weights = remove_inactive_bases(bases_unfiltered, weights_unfiltered, bases_threshold)
 
     # Perform Kmeans Clustering (with Kmeans++ initialization)
@@ -299,5 +304,6 @@ if __name__ == "__main__":
 
     sf.write("vocals.wav", cluster_signals[vocal_cluster], sr)
 
+    # Save all clusters
     for i in range(len(cluster_signals)):
          sf.write(f"cluster{i}.wav", cluster_signals[i], sr)
