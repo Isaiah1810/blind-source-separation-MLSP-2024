@@ -19,7 +19,7 @@ def kl_divergence(M, B, W):
 
 def nndsvd(M, k, mode="nndsvd"):
     """
-    NNDSVD algorithm to initialize NMF matrices B and W.
+    NNDSVD algorithm to initialize NMF matrix W.
     
     Parameters:
     M: 2D np.array
@@ -32,8 +32,6 @@ def nndsvd(M, k, mode="nndsvd"):
         NNDSVD with zeros filled with small random values.
         
     Returns:
-    B: 2D np.array
-        The initialized basis matrix (D x K).
     W: 2D np.array
         The initialized weight matrix (K x N).
     """
@@ -44,14 +42,12 @@ def nndsvd(M, k, mode="nndsvd"):
     
     # Initialize B and W
     if mode == "nndsvdar":
-        B = np.random.random((D, k)) + 1e-7 # For matrix stability
+        # For matrix stability
         W = np.random.random((k, N)) + 1e-7
     else:
-        B = np.zeros((D, k))
         W = np.zeros((k, N))
         
     # Initialize the first component
-    B[:, 0] = np.sqrt(S[0]) * np.abs(U[:, 0])
     W[0, :] = np.sqrt(S[0]) * np.abs(Vt[0, :])
     
     # Initialize the remaining components
@@ -72,22 +68,19 @@ def nndsvd(M, k, mode="nndsvd"):
         neg_term = norm_u_neg * norm_v_neg
         
         if pos_term >= neg_term:
-            B[:, i] = np.sqrt(S[i] * pos_term) * u_pos / norm_u_pos
             W[i, :] = np.sqrt(S[i] * pos_term) * v_pos / norm_v_pos
         else:
-            B[:, i] = np.sqrt(S[i] * neg_term) * u_neg / norm_u_neg
             W[i, :] = np.sqrt(S[i] * neg_term) * v_neg / norm_v_neg
     
 
     # Handle zero elements based on the mode
     if mode == "nndsvda":
         avg = np.mean(M)
-        B[B == 0] = avg
         W[W == 0] = avg
 
-    return B, W
+    return W
 
-def nmf(M, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=1e-2, 
+def nmf(M, B, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=1e-2, 
         lambda_temporal=1e-1, verbose=True):
     '''
     Non Negative Matrix Factorization using KL-Divergence
@@ -118,15 +111,14 @@ def nmf(M, n_bases=20, thresh=1e-6, n_iterations=200, lambda_sparse=1e-2,
     D, N = M.shape
     K = n_bases
     epsilon = 1e-10 # For numerical stability
-    B, W = nndsvd(M, n_bases, mode='nndsvdar') # Use random mode for zero values
-    B = np.clip(B, epsilon, None)
+    W = nndsvd(M, n_bases, mode='nndsvdar') # Use random mode for zero values
     W = np.clip(W, epsilon, None)
     ones = np.ones(M.shape)
     i = 0
     div = np.inf  
     prev = 0
     while i < n_iterations and div > thresh:
-        B = B * (((M / (B @ W)) @ W.T) / (ones @ W.T + epsilon))
+       # B = B * (((M / (B @ W)) @ W.T) / (ones @ W.T + epsilon))
         W_update = (B.T @ (M / (B @ W))) / (B.T @ ones + lambda_sparse + epsilon)
         
         # Temporal continuity regularization on W
@@ -250,13 +242,15 @@ if __name__ == "__main__":
     spect = librosa.stft(wave, n_fft=2048, win_length=1024, hop_length=256)
     mag = np.abs(spect)
     phase = np.angle(spect)
-    
+    b_speech = np.loadtxt("speech_B.txt")
+    b_music = np.loadtxt("music_B.txt")
+    B = np.concatenate([b_speech, b_music], axis=1)
     # Perform NMF
     n_bases = 40
-    n_iterations = 100
+    n_iterations = 200
     lambda_sparse = 0.1
     lambda_temporal = 0.1
-    bases_unfiltered, weights_unfiltered = nmf(mag, n_bases=n_bases, n_iterations=n_iterations, 
+    bases_unfiltered, weights_unfiltered = nmf(mag, B, n_bases=n_bases, n_iterations=n_iterations, 
                          lambda_sparse=lambda_sparse, lambda_temporal=lambda_temporal, verbose=True)
 
     # Remove any inactive bases
