@@ -246,7 +246,7 @@ if __name__ == "__main__":
     b_music = np.loadtxt("music_B.txt")
     B = np.concatenate([b_speech, b_music], axis=1)
     # Perform NMF
-    n_bases = 40
+    n_bases = 80
     n_iterations = 200
     lambda_sparse = 0.1
     lambda_temporal = 0.1
@@ -261,9 +261,7 @@ if __name__ == "__main__":
     n_clusters = 3
     if verbose:
         print("Clustering Bases")
-    C, z = kmeans(bases.T, n_clusters, algo=1)
-
-    C = C.T
+    C, z = kmeans(weights, n_clusters, algo=1)
 
     # Calculate Harmonic-to-noise ratio
     hnr_values = []
@@ -272,8 +270,6 @@ if __name__ == "__main__":
         if verbose:
             print(f"Calculating HNR for cluster {cluster_idx}")
         # Get all data points assigned to this cluster
-
-        cluster_indices = np.where(z == cluster_idx)[0]
 
         cluster_weights = weights[z == cluster_idx]
         cluster_bases = bases[:, z == cluster_idx]
@@ -285,17 +281,28 @@ if __name__ == "__main__":
             continue
         
         # Reconstruct audio singal for HNR analysis
-        cluster_mag = cluster_bases @ cluster_weights
-        cluster_spect = cluster_mag * np.exp(1j * phase)
+        S = cluster_bases @ cluster_weights
+
+
+        # Construct Wiener Fiilter
+        M = mag - S
+        wiener = (S ** 2) / (S ** 2 + M ** 2)
+
+        # Apply Wiener to Original Spectrogram 
+        cluster_spect = np.multiply(wiener, spect) * np.exp(1j * phase)
         cluster_signal = librosa.istft(cluster_spect, n_fft=2048, win_length=1024, hop_length=256)
+        
         # Calculate HNR for the concatenated signal
         hnr_value = calculate_hnr(cluster_signal, sr)
         hnr_values.append(hnr_value)
         cluster_signals.append(cluster_signal)
     
     # Select cluster with highest hnr
+
     vocal_cluster = np.argmax(hnr_values)
 
+
+    # Recover Original Waveform 
     sf.write("vocals.wav", cluster_signals[vocal_cluster], sr)
 
     # Save all clusters
