@@ -87,7 +87,7 @@ def nmf(M, n_bases=40, thresh=1e-6, n_iterations=200, lambda_sparse=1e-1,
 
 if __name__ == "__main__":
     data_dir = "data/train"
-    song_list = os.listdir(data_dir)[:3]
+    song_list = os.listdir(data_dir)[:10]
     spect_list = []
     
     for song in song_list:
