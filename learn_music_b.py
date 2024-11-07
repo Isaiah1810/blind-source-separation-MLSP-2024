@@ -1,106 +1,105 @@
-import numpy as np
+import cupy as cp
 import librosa
 import os
 
 def kl_divergence(M, B, W):
     M_hat = B @ W
-    M_hat = np.maximum(M_hat, 1e-10)  # Add small constant to avoid log(0)
+    M_hat = cp.maximum(M_hat, 1e-10)  # Add small constant to avoid log(0)
     
     # Calculate KL Divergence
-    kl_div = np.sum(M * np.log(M / M_hat + 1e-10))  # For numerical stability
+    kl_div = cp.sum(M * cp.log(M / M_hat + 1e-10))  # For numerical stability
     
     return kl_div
 
 def nndsvd(M, k):
     D, N = M.shape
-    U, S, Vt = np.linalg.svd(M, full_matrices=False)
+    U, S, Vt = cp.linalg.svd(M, full_matrices=False)
     
-    B = np.zeros((D, k))
-    W = np.zeros((k, N))
+    B = cp.zeros((D, k))
+    W = cp.zeros((k, N))
     
     # Initialize the first component
-    B[:, 0] = np.sqrt(S[0]) * np.abs(U[:, 0])
-    W[0, :] = np.sqrt(S[0]) * np.abs(Vt[0, :])
+    B[:, 0] = cp.sqrt(S[0]) * cp.abs(U[:, 0])
+    W[0, :] = cp.sqrt(S[0]) * cp.abs(Vt[0, :])
     
     # Initialize the remaining components
-    for i in range(1, min(k, D)):
+    for i in range(1, k):
         u = U[:, i]
         v = Vt[i, :]
-        u_pos = np.maximum(u, 0)
-        u_neg = np.maximum(-u, 0)
-        v_pos = np.maximum(v, 0)
-        v_neg = np.maximum(-v, 0)
+        u_pos, u_neg = cp.maximum(u, 0), cp.maximum(-u, 0)
+        v_pos, v_neg = cp.maximum(v, 0), cp.maximum(-v, 0)
         
-        norm_u_pos = np.linalg.norm(u_pos)
-        norm_v_pos = np.linalg.norm(v_pos)
-        norm_u_neg = np.linalg.norm(u_neg)
-        norm_v_neg = np.linalg.norm(v_neg)
+        norm_u_pos = cp.linalg.norm(u_pos) + 1e-10
+        norm_v_pos = cp.linalg.norm(v_pos) + 1e-10
+        norm_u_neg = cp.linalg.norm(u_neg) + 1e-10
+        norm_v_neg = cp.linalg.norm(v_neg) + 1e-10
         
         pos_term = norm_u_pos * norm_v_pos
         neg_term = norm_u_neg * norm_v_neg
         
         if pos_term >= neg_term:
-            B[:, i] = np.sqrt(S[i] * pos_term) * u_pos / norm_u_pos
-            W[i, :] = np.sqrt(S[i] * pos_term) * v_pos / norm_v_pos
+            B[:, i] = cp.sqrt(S[i] * pos_term) * u_pos / norm_u_pos
+            W[i, :] = cp.sqrt(S[i] * pos_term) * v_pos / norm_v_pos
         else:
-            B[:, i] = np.sqrt(S[i] * neg_term) * u_neg / norm_u_neg
-            W[i, :] = np.sqrt(S[i] * neg_term) * v_neg / norm_v_neg
+            B[:, i] = cp.sqrt(S[i] * neg_term) * u_neg / norm_u_neg
+            W[i, :] = cp.sqrt(S[i] * neg_term) * v_neg / norm_v_neg
     
     return B, W
 
 def nmf(M, n_bases=40, thresh=1e-6, n_iterations=200, lambda_sparse=1e-1, 
         lambda_temporal=1e-1, verbose=True):
     D, N = M.shape
-    K = n_bases
     epsilon = 1e-10  # For numerical stability
 
     # Use NNDSVD for initialization
-    B = np.random.random((D, n_bases))
-    W = np.random.random((n_bases, N))
+    B, W = nndsvd(M, n_bases)
     
-    ones = np.ones(M.shape)
-    i = 0
-    div = np.inf  
-    prev = 0
+    ones = cp.ones(M.shape)
+    i, prev_div = 0, cp.inf
     
-    while i < n_iterations and div > thresh:
+    while i < n_iterations and prev_div > thresh:
         # Update B and W
-        B = B * (((M / (B @ W)) @ W.T) / (ones @ W.T + epsilon))
-        W_update = (B.T @ (M / (B @ W))) / (B.T @ ones + lambda_sparse + epsilon)
+        B_update = ((M / (B @ W + epsilon)) @ W.T) / (ones @ W.T + epsilon)
+        B *= B_update
+        B = cp.maximum(B, epsilon)  # Ensure non-negativity
+
+        W_update = (B.T @ (M / (B @ W + epsilon))) / (B.T @ ones + lambda_sparse + epsilon)
         
         # Temporal continuity regularization on W
         for t in range(1, N):
             W_update[:, t] += lambda_temporal * (W[:, t-1] - W[:, t])
         
-        W = W * W_update
-        B = np.clip(B, epsilon, None)
-        W = np.clip(W, epsilon, None)
-        
+        W *= W_update
+        W = cp.maximum(W, epsilon)  # Ensure non-negativity
+
+        # Calculate divergence for convergence check
         kl = kl_divergence(M, B, W)
-        div = np.abs(kl - prev)
-        if verbose and i % 10 == 0:  # Print every 10 iterations
-            print(f"Iteration {i}: Change = {div:.2f}: Divergence = {kl:.6f}")
+        prev_div = cp.abs(kl - prev_div)
+
+        if verbose and i % 10 == 0:
+            print(f"Iteration {i}: Change = {prev_div:.2f}, KL Divergence = {kl:.6f}")
+        
         i += 1
-        prev = kl
+        prev_div = kl
     
     return B, W
 
 if __name__ == "__main__":
     data_dir = "data/train"
-    song_list = os.listdir(data_dir)[:10]
+    song_list = os.listdir(data_dir)[:20]
     spect_list = []
     
     for song in song_list:
         print(f"Getting song {song}")
-        wave1, sr = librosa.load(os.path.join(data_dir, song, 'mixture.wav'))
-        wave2, sr = librosa.load(os.path.join(data_dir, song, 'vocals.wav'))
+        wave1, sr = librosa.load(os.path.join(data_dir, song, 'mixture.wav'), duration=30)
+        wave2, sr = librosa.load(os.path.join(data_dir, song, 'vocals.wav'), duration=30)
         wave = wave1 - wave2
-        spect = np.abs(librosa.stft(wave, n_fft=2048, win_length=1024, hop_length=256))
+        spect = cp.abs(cp.array(librosa.stft(wave, n_fft=2048, win_length=1024, hop_length=256)))
         spect_list.append(spect)
         
-    M = np.hstack(spect_list)
+    M = cp.hstack(spect_list)
     print("Running NMF")
     B, W = nmf(M)
 
     # Save the basis matrix B to a text file
-    np.savetxt("music_B.txt", B)
+    cp.savetxt("music_B.txt", B)
