@@ -89,7 +89,7 @@ def perform_separation(mag, B_speech, B_music, phase, sr=22050, verbose=True):
     reconstructed_spect = wiener_filter * mag * cp.exp(1j * phase)
     signal_music = librosa.istft(cp.asnumpy(reconstructed_spect), hop_length=256)
 
-    sf.write("music.wav", signal_music, sr)
+    sf.write("../results/music.wav", signal_music, sr)
 
 ####################### ANALYSIS FILES ###################################################
     # Create Un_filtered vocals and music for comparison
@@ -97,7 +97,7 @@ def perform_separation(mag, B_speech, B_music, phase, sr=22050, verbose=True):
     signal_vocal = librosa.istft(cp.asnumpy(S * cp.exp(1j * phase)), hop_length=256, n_fft=2048, win_length=1024)
     signal_music = librosa.istft(cp.asnumpy(M * cp.exp(1j * phase)), hop_length=256, n_fft=2048, win_length=1024)
     #harmonic, percussive = librosa.effects.hpss(signal_vocal)
-    sf.write("vocals.wav", signal_vocal, sr)
+    sf.write("../results/vocals.wav", signal_vocal, sr)
     # sf.write("music_no_mask.wav", signal_music, sr)
 
     # # Full audio reconstruction for comparison
@@ -119,7 +119,7 @@ if __name__ == "__main__":
     import numpy as np
     b_speech = cp.loadtxt("speech_B.txt")
     b_music  = cp.loadtxt("music_B.txt")
-    path = "../data/train/Actions - One Minute Smile/linear_mixture.wav"
+    path = "../data/train/Actions - One Minute Smile/mixture.wav"
     music, vocals, sr = seperate_audio(path, b_speech, b_music)
 
     # true_vocals, sr = librosa.load("data/train/Actions - One Minute Smile/vocals.wav")
